@@ -168,9 +168,16 @@ def main() -> None:
     bench_parser = subparsers.add_parser("bench", help="Run microsecond benchmark suite")
     bench_parser.add_argument("-n", "--iterations", type=int, default=50000, help="Number of benchmark iterations")
 
+    serve_parser = subparsers.add_parser("serve", help="Launch FastAPI Zero-Trust Attestation & Policy REST service")
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Binding host address")
+    serve_parser.add_argument("--port", type=int, default=8443, help="Binding port (default: 8443)")
+
     args = parser.parse_args()
 
-    if args.command == "bench":
+    if args.command == "serve":
+        from zerotrust.server import serve
+        serve(host=args.host, port=args.port)
+    elif args.command == "bench":
         run_benchmark(iterations=args.iterations)
     else:
         parser.print_help()

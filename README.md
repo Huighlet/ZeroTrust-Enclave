@@ -2,7 +2,7 @@
 
 **High-Assurance Zero-Trust Microsegmentation Gateway & Ephemeral SPIFFE Workload Attestation Engine**
 
-[![Build Status](https://img.shields.io/badge/tests-22%20passed-brightgreen.svg)](https://github.com/Huighlet/ZeroTrust-Enclave)
+[![Build Status](https://img.shields.io/badge/tests-27%20passed-brightgreen.svg)](https://github.com/Huighlet/ZeroTrust-Enclave)
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Zero AI Slop](https://img.shields.io/badge/codebase-zero%20ai%20slop-black.svg)](https://github.com/Huighlet/ZeroTrust-Enclave)
@@ -194,6 +194,68 @@ tests/test_spiffe.py::test_spiffe_equality_and_hashing PASSED            [100%]
 ### Executing Microsecond Benchmarks
 ```bash
 zerotrust bench -n 50000
+```
+
+---
+
+## Turnkey REST Attestation & PEP Gateway Server & Docker Deployment
+
+ZeroTrust-Enclave includes a production-grade FastAPI REST gateway offering workload attestation, ephemeral SVID token issuance, ABAC microsegmentation evaluation under Default Deny, tamper-evident audit ledger inspection, and an interactive developer UI.
+
+### 1. Launch Server via CLI
+
+```bash
+# Start standalone Zero-Trust gateway on port 8443
+zerotrust serve --host 0.0.0.0 --port 8443
+```
+
+Once initialized:
+- **Interactive Security Console:** [`http://localhost:8443/`](http://localhost:8443/)
+- **Interactive Swagger / OpenAPI Docs:** [`http://localhost:8443/docs`](http://localhost:8443/docs)
+- **Gateway Health & Audit Ledger Check:** [`http://localhost:8443/health`](http://localhost:8443/health)
+- **Microsegmentation Policies:** [`http://localhost:8443/v1/policies`](http://localhost:8443/v1/policies)
+- **Chained Audit Ledger:** [`http://localhost:8443/v1/audit/chain`](http://localhost:8443/v1/audit/chain)
+
+### 2. Standalone Container Execution (Docker)
+
+```bash
+# Build production image
+docker build -t zerotrust-enclave:latest .
+
+# Run standalone container
+docker run -d --name zerotrust-gateway -p 8443:8443 zerotrust-enclave:latest
+
+# Verify service health
+curl -s http://localhost:8443/health
+```
+
+### 3. REST API Forensics Usage Examples
+
+**Attest Candidate Binary and Mint Ephemeral SVID Token:**
+```bash
+curl -X POST http://localhost:8443/v1/attest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profile_id": "ledger-core-prod",
+    "candidate_hex": "7f454c4650524f445f4c45444745525f42494e415259...",
+    "ttl_seconds": 3600
+  }'
+```
+
+**Evaluate Authorization Request at Policy Enforcement Point (PEP):**
+```bash
+curl -X POST http://localhost:8443/v1/authorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "svid_serial": "svid_88192a_991823",
+    "target_spiffe_uri": "spiffe://enclave.internal/ns/finance/service/ledger",
+    "action": "TRANSFER"
+  }'
+```
+
+**Cryptographically Verify SHA-256 Audit Ledger:**
+```bash
+curl -s http://localhost:8443/v1/audit/verify
 ```
 
 ---
