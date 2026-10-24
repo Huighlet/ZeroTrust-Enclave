@@ -7,12 +7,14 @@ ABAC microsegmentation policy enforcement, tamper-evident audit ledger chaining,
 from __future__ import annotations
 
 import hashlib
+import os
+import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from zerotrust.gateway import ZeroTrustGateway
@@ -107,6 +109,81 @@ gateway.add_policy_rule(
         description="Allow authenticated financial services to invoke core ledger",
     )
 )
+
+
+class EnclaveRateLimiter:
+    """Token bucket rate limiter for enclave PEP gateway."""
+    def __init__(self, capacity: int = 2000, refill_rate: float = 500.0) -> None:
+        self.capacity = capacity
+        self.tokens = float(capacity)
+        self.refill_rate = refill_rate
+        self.last_ts = time.monotonic()
+        self._lock = threading.Lock()
+
+    def consume(self) -> Tuple[bool, int]:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self.last_ts
+            self.last_ts = now
+            self.tokens = min(float(self.capacity), self.tokens + elapsed * self.refill_rate)
+            if self.tokens >= 1.0:
+                self.tokens -= 1.0
+                return True, int(self.tokens)
+            return False, 0
+
+
+_limiter = EnclaveRateLimiter(capacity=2000, refill_rate=500.0)
+
+
+@app.middleware("http")
+async def enterprise_middleware(request: Request, call_next):
+    allowed, remaining = _limiter.consume()
+    if not allowed:
+        return Response(
+            content='{"detail": "Rate limit exceeded. Attestation gateway busy."}',
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            media_type="application/json",
+            headers={"Retry-After": "1"},
+        )
+
+    configured_key = os.environ.get("ZEROTRUST_API_KEY")
+    if configured_key and request.url.path.startswith("/v1/"):
+        req_key = request.headers.get("X-API-Key")
+        if req_key != configured_key:
+            return Response(
+                content='{"detail": "Unauthorized: Invalid or missing X-API-Key header"}',
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                media_type="application/json",
+            )
+
+    response = await call_next(request)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
+
+
+@app.get("/metrics", response_class=PlainTextResponse, tags=["Observability"])
+def get_metrics() -> PlainTextResponse:
+    """Prometheus metrics endpoint for attestation and authorization decisions."""
+    profiles_count = len(gateway.attestation._profiles)
+    policies_count = len(gateway.policy._rules)
+    audit_len = len(gateway.audit_chain)
+    tokens_count = len(issued_tokens)
+
+    lines = [
+        "# HELP zerotrust_profiles_active Number of registered workload profiles",
+        "# TYPE zerotrust_profiles_active gauge",
+        f"zerotrust_profiles_active {profiles_count}",
+        "# HELP zerotrust_policies_active Number of active ABAC microsegmentation policies",
+        "# TYPE zerotrust_policies_active gauge",
+        f"zerotrust_policies_active {policies_count}",
+        "# HELP zerotrust_tokens_issued_total Total active SVID tokens in cache",
+        "# TYPE zerotrust_tokens_issued_total gauge",
+        f"zerotrust_tokens_issued_total {tokens_count}",
+        "# HELP zerotrust_audit_chain_length Total cryptographically verified audit records",
+        "# TYPE zerotrust_audit_chain_length counter",
+        f"zerotrust_audit_chain_length {audit_len}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------
@@ -395,6 +472,27 @@ def verify_audit():
         "is_valid": is_valid,
         "chain_length": len(gateway.audit_chain),
         "head_hash": gateway.audit_chain[-1].record_hash if gateway.audit_chain else gateway.GENESIS_HASH,
+    }
+
+
+@app.post("/v1/svid/revoke/{serial}", tags=["Credential Management"])
+def revoke_svid(serial: str) -> Dict[str, Any]:
+    """Emergency revocation of an active SVID token."""
+    gateway.ca.revoke_svid(serial)
+    if serial in issued_tokens:
+        t = issued_tokens[serial]
+        issued_tokens[serial] = SVIDToken(
+            serial_number=t.serial_number,
+            spiffe_id=t.spiffe_id,
+            issued_at=t.issued_at,
+            expires_at=t.expires_at,
+            signature=t.signature,
+            is_revoked=True,
+        )
+    return {
+        "status": "REVOKED",
+        "serial": serial,
+        "revoked_at": time.time(),
     }
 
 
